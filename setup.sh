@@ -4,7 +4,7 @@ parade_path="$PWD/sql"
 
 echo "Parade Setup"
 echo
-read parade_path_input"?Parade path ($parade_path): " 
+read -p "Parade path ($parade_path): " parade_path_input
 
 if [ ! -z "$parade_path_input" ]; then
     parade_path="$parade_path_input"
@@ -39,10 +39,16 @@ if [ ! -e ".env" ]; then
 fi
 
 echo
-read default_db"?Default database: "
+read -p "Default database: " default_db
 
 echo
-read editor"?Code editor: "
+read -p "Code editor: " editor
+
+echo
+echo "Downloading Parade..."
+curl https://raw.githubusercontent.com/negcx/parade/master/parade > $parade_path/parade
+chmod +x $parade_path/parade
+echo
 
 echo "Updating .env..."
 echo "export PARADE_PATH=\"$parade_path\""
@@ -61,5 +67,4 @@ echo "export PARADE_EDITOR=\"$editor\""
 echo "export PARADE_EDITOR=\"$editor\"" >> ".env"
 export PARADE_EDITOR="$editor"
 
-echo
-echo "Downloading Parade..."
+echo "You're all set. Don't forget to run parade install on your database(s)."
