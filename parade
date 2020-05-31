@@ -1,0 +1,397 @@
+#!/bin/bash
+
+parade_path=$PARADE_PATH
+editor=$PARADE_EDITOR
+
+if [ -z "$parade_path" ]; then
+    echo "Please set the environment variable PARADE_PATH."
+    exit 1
+fi
+
+error() {
+    >&2 echo "parade:" $@;
+}
+
+usage() {
+    >&2 cat <<- __EOF__
+usage: parade <command> [<args>]
+
+commands:
+    install     Install Parade on your database
+    new         Create a new migration
+    migrate     Run migrations
+    list        List migrations
+    help        Show this help message
+
+    gen.init    Generate a migration with extensions and timestamp trigger.
+
+For help on a specific command, call the command with the --help option.
+__EOF__
+}
+
+install_usage() {
+    >&2 cat <<- __EOF__
+usage: parade install [-d <database_url>] [--help]
+__EOF__
+}
+
+function join_by { local d=$1; shift; echo -n "$1"; shift; printf "%s" "${@/#/$d}"; }
+
+do_install() {
+    local database_url=$PARADE_DB
+    local response=
+
+    while [ "$1" != "" ]; do
+        case $1 in
+            -d | --database )       shift
+                                    database_url=$1
+                                    ;;
+
+            --help )                shift
+                                    install_usage
+                                    exit
+                                    ;;
+
+            * )                     install_usage
+                                    exit 1
+                                    ;;
+        esac
+        shift
+    done
+
+    if [ -z "$database_url" ]; then
+        error "You must provide a database name/URL using the -d option or the PARADE_DB environment variable."
+        error
+        install_usage
+        exit 1
+    fi
+
+    local db_response=$( psql -d $database_url -q -c "select * from information_schema.schemata where schema_name='_v'" 2>&1 )
+
+    if [[ $db_response == *"does not exist"* ]]; then
+        error "Database $database_url does not exist. Please create the database using createdb and then try again."
+
+        exit 1
+    fi
+
+    if [[ ! $db_response == *"1 row"* ]]; then
+        error "Downloading Versioning by depesz (https://gitlab.com/depesz)..."
+        git clone --depth=1 -q  https://gitlab.com/depesz/Versioning.git $parade_path/parade_tmp
+
+        error "Installing Versioning..."
+        psql -d $database_url --q -w -f $parade_path/parade_tmp/install.versioning.sql
+
+        rm -rf $parade_path/parade_tmp
+
+        error "Parade installed on $database_url"
+    else
+        error "Parade already installed on $database_url"
+    fi
+
+    
+}
+
+new_usage() {
+    >&2 cat <<- __EOF__
+usage: parade new <migration name> [-r dependencies] [-t tables] [-m description]
+
+example: parade new donations -r init user -t donation sponsor -m "Allows users to donate and sponsor"
+__EOF__
+}
+
+do_new() {
+    local migration=
+    local tables=()
+    local requirements=()
+    local mode=migration
+    local message=
+
+    while [ "$1" != "" ]; do
+        case $1 in
+            --help )            shift
+                                new_usage
+                                exit
+                                ;;
+            
+            -r )                shift
+                                mode="requirements"
+                                ;;
+
+            -t )                shift
+                                mode="tables"
+                                ;;
+            
+            -m )                shift
+                                message=$1
+                                shift
+                                ;;
+
+            * )                 if [ "$mode" == "migration" ]; then
+                                    migration=$1
+                                    mode=""
+                                elif [ "$mode" == "requirements" ]; then
+                                    requirements+=("$1")
+                                elif [ "$mode" == "tables" ]; then
+                                    tables+=("$1")
+                                else
+                                    error "Error: Unexpected positional argument."
+                                    echo
+                                    new_usage
+                                    exit 1
+                                fi
+                                shift
+        esac
+    done
+
+    if [ -z "$migration" ]; then
+        error "Error: Missing migration name."
+        error
+        new_usage
+        exit 1
+    fi
+
+    while read line; do
+        local existing_migration="$( echo "$line" | cut -d '|' -f 1 )"
+        local filename="$( echo "$line" | cut -d '|' -f 2 )"
+
+        if [ "$migration" == "$existing_migration" ]; then
+            error "Error: That migration name already exists."
+            error "$existing_migration: $parade_path/migrations/$filename"
+            exit 1
+        fi
+    done < $parade_path/migrations.txt
+
+    local filename="$( date +"%Y-%m-%d" )_$migration.sql"
+
+    local output_path="$parade_path/migrations/$filename"
+
+    local requirements_text=
+
+    if (( ${#requirements[@]} )); then
+        requirements_text=$(join_by "', '" "${requirements[@]}")
+        requirements_text="'$requirements_text'"
+    fi
+
+    echo "BEGIN;" >> $output_path
+    echo "SELECT _v.register_patch('$migration', ARRAY[$requirements_text]);" >> $output_path
+    echo >> $output_path
+
+    for table in ${tables[*]}; do
+        echo "CREATE TABLE $table (" >> $output_path
+
+        echo "    $table""_id UUID PRIMARY KEY DEFAULT uuid_generate_v1mc()" >> $output_path
+        echo >> $output_path
+        echo >> $output_path
+        echo "    , created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" >> $output_path
+        echo "    , updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()" >> $output_path
+        echo ");" >> $output_path
+        echo >> $output_path
+        echo "CREATE TRIGGER tg_""$table""_timestamp" >> $output_path
+        echo "BEFORE UPDATE ON $table" >> $output_path
+        echo "FOR EACH ROW" >> $output_path
+        echo "EXECUTE PROCEDURE trigger_update_timestamp();" >> $output_path
+        echo >> $output_path
+    done
+
+    echo "COMMIT;" >> $output_path
+
+    echo "$migration|$filename|$message" >> $parade_path/migrations.txt
+
+    error "Migration created: $output_path"
+
+    if [ ! -z "$editor" ]; then
+        $editor $output_path
+    fi
+}
+
+migrate_usage() {
+    >&2 cat <<- __EOF__
+usage: parade migrate [-d database] [-f migrations-path]
+__EOF__
+}
+
+do_migrate() {
+    local database_url=$PARADE_DB
+    local migrations_path="$parade_path/migrations.txt"
+
+    while [ "$1" != "" ]; do
+        case $1 in
+            --help )            shift
+                                migrate_usage
+                                exit
+                                ;;
+            
+            -d )                shift
+                                database_url=$1
+                                shift
+                                ;;
+
+            -f )                shift
+                                migrations_path=$1
+                                shift
+                                ;;
+
+            * )                 migrate_usage
+                                exit 1
+        esac
+    done
+
+    while read line; do
+        local migration="$( echo "$line" | cut -d '|' -f 1 )"
+        local filename="$( echo "$line" | cut -d '|' -f 2 )"
+
+        local db_response=$( psql -d $database_url -q -c "select patch_name from _v.patches where patch_name='$migration'" 2>&1 )
+        local migration_response=
+
+        if [[ ! $db_response == *"1 row"* ]]; then
+            migration_response=$( psql -d $database_url -q -w -f $parade_path/migrations/$filename 2>&1 )
+
+            if [[ "$migration_response" == *"ERROR"* ]]; then
+                echo "❌ $migration: $parade_path/migrations/$filename"
+                echo
+                echo "$migration_response"
+                break
+            else
+                echo "✅ $migration"
+            fi
+        fi
+    done < $migrations_path
+}
+
+do_gen_init() {
+    local migration=$1
+
+    if [ -z "$migration" ]; then
+        error "Error: Migration name required."
+        exit 1
+    fi
+
+    while read line; do
+        local existing_migration="$( echo "$line" | cut -d '|' -f 1 )"
+        local filename="$( echo "$line" | cut -d '|' -f 2 )"
+
+        if [ "$migration" == "$existing_migration" ]; then
+            error "Error: That migration name already exists."
+            error "$existing_migration: $parade_path/migrations/$filename"
+            exit 1
+        fi
+    done < $parade_path/migrations.txt
+
+    local filename="$( date +"%Y-%m-%d" )_$migration.sql"
+
+    local output_path="$parade_path/migrations/$filename"
+
+    local requirements_text=
+
+    echo "BEGIN;" >> $output_path
+    echo "SELECT _v.register_patch('$migration');" >> $output_path
+    echo >> $output_path
+    echo "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";" >> $output_path
+    echo "CREATE EXTENSION IF NOT EXISTS citext;" >> $output_path
+    echo >> $output_path
+    echo "CREATE OR REPLACE FUNCTION trigger_update_timestamp()" >> $output_path
+    echo "RETURNS TRIGGER AS \$\$" >> $output_path
+    echo "BEGIN" >> $output_path
+    echo "    NEW.updated_at = NOW();" >> $output_path
+    echo "    RETURN NEW;" >> $output_path
+    echo "END;" >> $output_path
+    echo "\$\$ LANGUAGE plpgsql;" >> $output_path
+
+    echo >> $output_path
+    echo "COMMIT;" >> $output_path
+
+    echo "$migration|$filename|Postgres extensions and timestamp trigger" >> $parade_path/migrations.txt
+
+    error "Migration created: $output_path"
+
+    if [ ! -z "$editor" ]; then
+        $editor $output_path
+    fi
+}
+
+list_usage() {
+    >&2 cat <<- __EOF__
+usage: parade list [-d database] [-f migrations-path]
+__EOF__
+}
+
+do_list() {
+    local database_url=$PARADE_DB
+    local migrations_path="$parade_path/migrations.txt"
+
+    while [ "$1" != "" ]; do
+        case $1 in
+            --help )            shift
+                                list_usage
+                                exit
+                                ;;
+            
+            -d )                shift
+                                database_url=$1
+                                shift
+                                ;;
+
+            -f )                shift
+                                migrations_path=$1
+                                shift
+                                ;;
+
+            * )                 list_usage
+                                exit 1
+        esac
+    done
+
+    local output=$'  Name|Description|Path\n  ----|-----------|----\n'
+
+    while read line; do
+        local migration="$( echo "$line" | cut -d '|' -f 1 )"
+        local filename="$( echo "$line" | cut -d '|' -f 2 )"
+        local description="$( echo "$line" | cut -d '|' -f 3 )"
+        local status=
+        local newline=$'\n'
+
+        local db_response=$( psql -d $database_url -q -c "select patch_name from _v.patches where patch_name='$migration'" 2>&1 )
+
+        if [[ $db_response == *"1 row"* ]]; then
+            status="  "
+        else
+            status="+ "
+        fi
+
+        output="${output}${status}$migration|$description|$parade_path/migrations/${filename}${newline}"
+    done < $migrations_path
+
+    echo
+    echo "$output" | column -t -c 4 -x -s "|"
+    echo
+}
+
+case $1 in
+    install )       shift
+                    do_install "$@"
+                    ;;
+    
+    new )           shift
+                    do_new "$@"
+                    ;;
+
+    list )          shift
+                    do_list "$@"
+                    ;;
+
+    gen.init )      shift
+                    do_gen_init "$@"
+                    ;;
+
+    help )          shift
+                    usage
+                    exit
+                    ;;
+
+    migrate )       shift
+                    do_migrate "$@"
+                    ;;
+
+    * )             usage
+                    exit 1
+esac
