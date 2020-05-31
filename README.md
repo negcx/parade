@@ -10,6 +10,8 @@ Parade is just a shell script called `parade`. To install, you can simply downlo
 
 Once the shell script is downloaded, you will need to run `parade install` on your database(s) so that the Versioning schema and functions can be added to your database.
 
+    curl https://raw.githubusercontent.com/negcx/parade/master/setup.sh > parade_setup.sh && bash parade_setup.sh && source .env && rm parade_setup.sh
+
 ### Setup Script
 
 I have provided an easy setup script that will download Parade and setup some nice defaults:
