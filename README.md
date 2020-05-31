@@ -28,7 +28,7 @@ I write applications using a number of different languages, tools, and framework
 
 Migrations from the shell in pure SQL are faster, easier to understand, and easier to manage than migrations that require the host language to run.
 
-Parade is built on top of [Versioning](https://gitlab.com/depesz/Versioning) by Hubert Lubaczewski aka [depesz](https://gitlab.com/depesz) under the hood. His blog post [How to manage changes to your database?](https://www.depesz.com/2010/08/22/versioning/) describes the theory behind Versioning and using pure SQL to manage your migrations.
+Parade is built on top of [Versioning](https://gitlab.com/depesz/Versioning) under the hood. The blog post [How to manage changes to your database?](https://www.depesz.com/2010/08/22/versioning/) describes the theory behind Versioning and using pure SQL to manage your migrations.
 
 ## Defaults
 
