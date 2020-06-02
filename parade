@@ -181,11 +181,13 @@ do_new() {
 
     if (( ${#requirements[@]} )); then
         requirements_text=$(join_by "', '" "${requirements[@]}")
-        requirements_text="'$requirements_text'"
+        requirements_text="ARRAY['$requirements_text']"
+    else
+        requirements_text="NULL"
     fi
 
     echo "BEGIN;" >> $output_path
-    echo "SELECT _v.register_patch('$migration', ARRAY[$requirements_text]);" >> $output_path
+    echo "SELECT _v.register_patch('$migration', $requirements_text);" >> $output_path
     echo >> $output_path
 
     for table in ${tables[*]}; do
@@ -209,9 +211,26 @@ do_new() {
 
     echo "$migration|$filename|$message" >> $parade_path/migrations.txt
 
+    # create rollbacks
+    local rollback_path="$parade_path/rollbacks/$filename"
+
+    echo "BEGIN;" >> $rollback_path
+    echo "SELECT _v.unregister_patch('$migration');" >> $rollback_path
+    echo >> $rollback_path
+
+    for (( idx=${#tables[@]}-1 ; idx>=0; idx-- )); do
+        local table="${tables[idx]}"
+        echo "DROP TABLE $table;" >> $rollback_path
+    done
+
+    echo >> $rollback_path
+    echo "COMMIT;" >> $rollback_path
+
     error "Migration created: $output_path"
+    error "Rollback created: $rollback_path"
 
     if [ ! -z "$editor" ]; then
+        $editor $rollback_path
         $editor $output_path
     fi
 }
@@ -314,7 +333,22 @@ do_gen_init() {
 
     echo "$migration|$filename|Postgres extensions and timestamp trigger" >> $parade_path/migrations.txt
 
+    # create rollbacks
+    local rollback_path="$parade_path/rollbacks/$filename"
+
+    echo "BEGIN;" >> $rollback_path
+    echo "SELECT _v.unregister_patch('$migration');" >> $rollback_path
+    echo >> $rollback_path
+
+    echo "DROP FUNCTION IF EXISTS trigger_update_timestamp();" >> $rollback_path
+    echo "DROP EXTENSION IF EXISTS citext;" >> $rollback_path
+    echo "DROP EXTENSION IF EXISTS \"uuid-ossp\";" >> $rollback_path
+
+    echo >> $rollback_path
+    echo "COMMIT;" >> $rollback_path
+
     error "Migration created: $output_path"
+    error "Rollback created: $rollback_path"
 
     if [ ! -z "$editor" ]; then
         $editor $output_path
